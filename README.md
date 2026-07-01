@@ -47,6 +47,8 @@
 | 文字没印上 | 检查 print_label=true 且 label 填了对应行 |
 | 改参数没生效 | 后端改动需重启 ComfyUI（不只刷新浏览器） |
 | 字体异常 | 系统缺微软雅黑，会回退默认字体 |
+<img width="1502" height="638" alt="屏幕截图 2026-07-01 120127" src="https://github.com/user-attachments/assets/300b6f5c-1e08-49ec-a335-258e22d93f6c" />
+<img width="736" height="719" alt="屏幕截图 2026-07-01 115316" src="https://github.com/user-attachments/assets/21bc7a21-10c6-4201-8dd9-dd7f09c4c879" />
 
 ---
 
