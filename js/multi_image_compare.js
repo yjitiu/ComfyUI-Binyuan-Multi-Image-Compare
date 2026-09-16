@@ -484,7 +484,7 @@ function buildGrid(viewport, imgs, infos, labeler, applyFlip, w, node) {
         Object.assign(iimg.style, { height: "100%", width: `${iw}px`, objectFit: "cover", display: "block" });
         applyFlip(iimg);
         cell.appendChild(iimg);
-        cell.appendChild(mkTag(tagText(infos[i], labeler, i, node), "left"));
+        cell.appendChild(mkTag(tagText(infos[i], labeler, i), "left"));
         row.appendChild(cell);
         rowW += iw + 2;
     });
@@ -547,8 +547,8 @@ function buildSlider(stage, viewport, imgs, infos, labeler, applyFlip, w, node) 
         fontSize: "11px", lineHeight: "16px", textAlign: "center",
     });
     divider.appendChild(knob);
-    const tagL = mkTag(infos[a] ? tagText(infos[a], labeler, a, node) : "#" + (a + 1), "left");
-    const tagR = mkTag(infos[b] ? tagText(infos[b], labeler, b, node) : "#" + (b + 1), "right");
+    const tagL = mkTag(infos[a] ? tagText(infos[a], labeler, a) : "#" + (a + 1), "left");
+    const tagR = mkTag(infos[b] ? tagText(infos[b], labeler, b) : "#" + (b + 1), "right");
     stage.appendChild(divider);
     stage.appendChild(tagL);
     stage.appendChild(tagR);
@@ -585,17 +585,10 @@ function stageHeight(vp) {
     return (vp && vp.clientHeight) || 300;
 }
 
-function tagText(info, labeler, i, node) {
-    if (!info) return "#" + (i + 1);
-    const base = labeler(info);
-    if (node && node.mic_print_label) {
-        const pl = node.mic_labels && node.mic_labels[info.input - 1];
-        if (pl) return pl + " · " + base;
-        if (node.mic_label) return node.mic_label + " · " + base;
-    }
-    return base;
+function tagText(info, labeler, i) {
+    // 详细参数已打印在图片下方，预览角标只显示输入/帧编号。
+    return info ? labeler(info) : "#" + (i + 1);
 }
-
 function mkTag(text, align) {
     const tag = document.createElement("span");
     tag.textContent = text;
@@ -771,3 +764,4 @@ app.registerExtension({
         };
     },
 });
+

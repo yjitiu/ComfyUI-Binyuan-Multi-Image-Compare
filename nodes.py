@@ -17,6 +17,8 @@
 """
 
 import math
+import json
+import re
 import os
 import uuid
 
@@ -215,6 +217,152 @@ def _scalar(v):
     return v
 
 
+def _graph_link(value, prompt):
+    return (isinstance(value, list) and len(value) == 2
+            and isinstance(value[1], int) and str(value[0]) in prompt)
+
+
+def _config_value(value, prompt):
+    if not _graph_link(value, prompt):
+        return value
+    node = prompt[str(value[0])]
+    inputs = node.get("inputs", {})
+    # Only resolve known literal providers; computed outputs are not widget values.
+    if node.get("class_type") == "Seed (rgthree)" and value[1] == 0:
+        return inputs.get("seed", "未知")
+    if node.get("class_type") in ("PrimitiveNode", "PrimitiveInt", "PrimitiveFloat", "PrimitiveString"):
+        result = inputs.get("value")
+        if not _graph_link(result, prompt):
+            return result
+    return f"动态输入 #{value[0]}:{value[1]}（运行值未知）"
+
+
+def _lora_config(text):
+    try:
+        data = json.loads(str(text))
+        if isinstance(data, dict):
+            return [data]
+        if isinstance(data, list):
+            return data
+    except (ValueError, TypeError):
+        pass
+    result = []
+    for line in str(text).splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", "//")):
+            continue
+        match = re.match(r"^(.+?)\s*[:|,]\s*(-?\d+(?:\.\d+)?)\s*$", line)
+        result.append({"n": match[1].strip() if match else line,
+                       "s": float(match[2]) if match else 1.0})
+    return result
+
+
+def _generation_info(prompt, link):
+    lines, seen = [], set()
+
+    def visit(edge):
+        if not _graph_link(edge, prompt) or str(edge[0]) in seen:
+            return
+        node_id = str(edge[0])
+        seen.add(node_id)
+        node = prompt[node_id]
+        kind, inputs = node.get("class_type", ""), node.get("inputs", {})
+        val = lambda key: _config_value(inputs.get(key), prompt)
+        if kind == "BinyuanUltimateSampler":
+            lines.append(f"采样器 #{node_id} · 提交配置")
+            inherit = inputs.get("串联模式") == "继承上游模型" and _graph_link(inputs.get("外部模型"), prompt)
+            if inherit:
+                lines.append("模型: 继承外部模型，来源见下方")
+            else:
+                key = "Checkpoint" if inputs.get("加载模式") == "整包Checkpoint" else "扩散模型"
+                lines.append(f"模型: {val(key)}")
+            for key in ("权重精度", "CLIP_1", "CLIP_2", "VAE"):
+                if val(key) not in (None, "None", ""):
+                    lines.append(f"{key}: {val(key)}")
+            raw = inputs.get("lora_json", "[]")
+            if _graph_link(raw, prompt):
+                lines.append("LoRA: " + str(val("lora_json")))
+            else:
+                entries = _lora_config(raw)
+                active = 0
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = entry.get("n") or entry.get("name")
+                    if not name or name == "None":
+                        continue
+                    strength = entry.get("s", entry.get("strength", 1.0))
+                    sm = entry.get("sm") if entry.get("sm") is not None else strength
+                    sc = entry.get("sc") if entry.get("sc") is not None else strength
+                    enabled = entry.get("e", True)
+                    active += bool(enabled)
+                    state = "配置" if enabled else "已禁用"
+                    lines.extend([f"LoRA ({state}): {name}", f"  模型权重={sm} | CLIP权重={sc}"])
+                if not active:
+                    lines.append("本节点 LoRA: 无启用配置")
+            if "LoRA设置" in inputs:
+                lines.append("额外 LoRA设置: " + str(val("LoRA设置")))
+            for keys in (("seed", "步数", "CFG"), ("采样算法", "调度器", "重绘强度"), ("Flux引导",)):
+                lines.append(" | ".join(f"{key}={val(key)}" for key in keys if key in inputs))
+            for key in ("外部Sigmas", "外部正面条件", "外部负面条件"):
+                if key in inputs:
+                    lines.append(f"{key}: 已接入（覆盖对应内部配置）")
+            if inherit:
+                visit(inputs["外部模型"])
+            for key in ("上游图像_1", "上游图像_2", "上游图像_3"):
+                if key in inputs:
+                    lines.append(f"{key} 来源:")
+                    visit(inputs[key])
+            return
+        fields = ("ckpt_name", "unet_name", "model_name", "lora_name", "strength_model", "strength_clip",
+                  "seed", "noise_seed", "steps", "cfg", "sampler_name", "scheduler", "denoise", "vae_name")
+        details = [f"{key}={val(key)}" for key in fields if key in inputs]
+        if details:
+            lines.append(f"{kind} #{node_id}")
+            lines.extend(details)
+        for value in inputs.values():
+            if _graph_link(value, prompt):
+                visit(value)
+
+    visit(link)
+    return [line for line in lines if line] or ["未识别生成参数（输入图像无可追溯配置）"]
+
+
+def _draw_info_panel(pil, text, size):
+    image = _pil_to_rgb(pil)
+    width = image.width
+    max_height = max(1, image.height // 3)
+    draw = ImageDraw.Draw(image)
+    # label_size is an upper bound for automatic information, not a forced size.
+    for fitted_size in range(max(8, min(int(size), width // 24)), 7, -1):
+        font = _load_font(fitted_size)
+        pad = max(4, fitted_size // 3)
+        lines = []
+        for paragraph in text.splitlines():
+            line = ""
+            for char in paragraph:
+                if line and draw.textlength(line + char, font=font) > max(1, width - pad * 2):
+                    lines.append(line)
+                    line = ""
+                line += char
+            lines.append(line)
+        ascent, descent = font.getmetrics()
+        line_height = ascent + descent + max(2, fitted_size // 5)
+        height = pad * 2 + line_height * len(lines)
+        if height <= max_height:
+            break
+    footer = Image.new("RGB", (width, height), (20, 20, 20))
+    draw = ImageDraw.Draw(footer)
+    for index, line in enumerate(lines):
+        draw.text((pad, pad + index * line_height), line, font=font, fill=(240, 240, 240))
+    if height > max_height:
+        footer = footer.resize((width, max_height), Image.LANCZOS)
+    panel = Image.new("RGB", (width, image.height + footer.height), (20, 20, 20))
+    panel.paste(image, (0, 0))
+    panel.paste(footer, (0, image.height))
+    return panel
+
+
 class MultiImageCompareNode:
     """N 张 / 多帧图片对比节点，输出横向拼图 + 每端口合成图。"""
 
@@ -226,8 +374,11 @@ class MultiImageCompareNode:
                 "print_label": ("BOOLEAN", {"default": True, "tooltip": "是否把 label 文字烧到图片左上角"}),
                 "label_size": ("INT", {"default": 32, "min": 8, "max": 200, "step": 1}),
             },
-            "optional": {},
-            "hidden": {"unique_id": "UNIQUE_ID"},
+            "optional": {
+                "auto_info": ("BOOLEAN", {"default": True, "tooltip": "按每个图片输入追溯模型、LoRA权重和采样配置；关闭则恢复手动标签。"}),
+                "include_manual_label": ("BOOLEAN", {"default": False, "tooltip": "把原有手写标签作为备注附加，避免旧标签与实际参数混淆。"}),
+            },
+            "hidden": {"unique_id": "UNIQUE_ID", "prompt": "PROMPT"},
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -247,6 +398,10 @@ class MultiImageCompareNode:
         label = str(label)
         print_label = bool(_scalar(kwargs.get("print_label", True)))
         label_size = int(_scalar(kwargs.get("label_size", 32)))
+        auto_info = bool(_scalar(kwargs.get("auto_info", True)))
+        include_manual = bool(_scalar(kwargs.get("include_manual_label", False)))
+        prompt = kwargs.get("prompt") or {}
+        own_inputs = prompt.get(str(_scalar(kwargs.get("unique_id", ""))), {}).get("inputs", {})
 
         # label 支持每端口不同：每行对应一个端口（第1行=端口1，第2行=端口2…）。
         # 端口数超出行数时该端口不打印；行数多出时忽略。
@@ -278,22 +433,41 @@ class MultiImageCompareNode:
                 print(f"[MultiImageCompare] 读取第 {input_no} 个输入失败: {err}")
                 continue
 
-            this_label = port_label(input_no) if print_label else ""
+            this_label = port_label(_idx) if print_label else ""
+            if print_label and auto_info:
+                details = _generation_info(prompt, own_inputs.get(_key))
+                this_label = "\n".join(details)
+                if include_manual and port_label(_idx):
+                    this_label = "备注: " + port_label(_idx) + "\n" + this_label
             port_labels_used.append(this_label)
 
             # 逐帧：可选烘焙【本端口】的标签
             for frame_no, pil in enumerate(pils):
+                preview = pil
                 if print_label and this_label:
-                    pil = _draw_label(pil, this_label, label_size)
+                    if auto_info:
+                        text = f"输入 {_idx} | 帧 {frame_no + 1}/{len(pils)} | {pil.width} × {pil.height}\n{this_label}"
+                        pil = _draw_info_panel(pil, text, label_size)
+                    else:
+                        pil = _draw_label(pil, this_label, label_size)
                 all_pils.append(pil)
-                info = _save_temp(pil)
+                info = _save_temp(preview if auto_info else pil)
                 info["input"] = input_no
                 info["frame"] = frame_no
                 images.append(info)
 
         # ---- grid 输出：所有端口所有帧横向并列合成一张大图（不另起一行）----
         if all_pils:
-            grid = _pil_to_tensor(_compose_grid(all_pils))
+            if auto_info and print_label:
+                height = max(p.height for p in all_pils)
+                canvas = Image.new("RGB", (sum(p.width for p in all_pils), height), (20, 20, 20))
+                x = 0
+                for p in all_pils:
+                    canvas.paste(p, (x, 0))
+                    x += p.width
+                grid = _pil_to_tensor(canvas)
+            else:
+                grid = _pil_to_tensor(_compose_grid(all_pils))
         else:
             grid = torch.zeros(1, 8, 8, 3)
 

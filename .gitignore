@@ -7,3 +7,13 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+
+# 本地备份与打包产物（不参与发布）
+*.bak
+*.bak-*
+*.bak_*
+*.rar
+node.zip
+
+# 本地分发说明（暂不发布）
+V1.5_分发修复说明.txt
