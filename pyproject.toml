@@ -1,7 +1,7 @@
 [project]
 name = "binyuan-multi-image-compare"
 description = "ComfyUI custom node - compare N images / multi-frame batches with slider & grid modes, bake per-port labels, export a composite grid image."
-version = "1.0.0"
+version = "1.5.0"
 requires-python = ">= 3.9"
 dependencies = []
 license = "MIT"

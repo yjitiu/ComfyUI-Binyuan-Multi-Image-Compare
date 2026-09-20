@@ -268,6 +268,61 @@ def _generation_info(prompt, link):
         node = prompt[node_id]
         kind, inputs = node.get("class_type", ""), node.get("inputs", {})
         val = lambda key: _config_value(inputs.get(key), prompt)
+        if kind == "BinyuanUltimateSamplerEN":
+            # 英文/双语版采样器：信息项与中文版一致，标签保持英文，不做任何中文化。
+            lines.append(f"Sampler #{node_id} · committed config")
+            inherit = ("Inherit upstream" in str(inputs.get("chaining_mode", ""))
+                       and _graph_link(inputs.get("external_model"), prompt))
+            if inherit:
+                lines.append("Model: inherits upstream model, see below")
+            else:
+                key = "checkpoint" if "whole file" in str(inputs.get("load_mode", "")) else "diffusion_model"
+                lines.append(f"Model: {val(key)}")
+            for key, label in (("weight_precision", "Weight precision"), ("clip_1", "CLIP 1"),
+                               ("clip_2", "CLIP 2"), ("vae", "VAE")):
+                if val(key) not in (None, "None", ""):
+                    lines.append(f"{label}: {val(key)}")
+            raw = inputs.get("lora_json", "[]")
+            if _graph_link(raw, prompt):
+                lines.append("LoRA: " + str(val("lora_json")))
+            else:
+                entries = _lora_config(raw)
+                active = 0
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = entry.get("n") or entry.get("name")
+                    if not name or name == "None":
+                        continue
+                    strength = entry.get("s", entry.get("strength", 1.0))
+                    sm = entry.get("sm") if entry.get("sm") is not None else strength
+                    sc = entry.get("sc") if entry.get("sc") is not None else strength
+                    enabled = entry.get("e", True)
+                    active += bool(enabled)
+                    state = "enabled" if enabled else "disabled"
+                    lines.extend([f"LoRA ({state}): {name}", f"  Model weight={sm} | CLIP weight={sc}"])
+                if not active:
+                    lines.append("Node LoRA: none enabled")
+            if "lora_settings" in inputs:
+                lines.append("Extra LoRA settings: " + str(val("lora_settings")))
+            for keys, labels in ((("seed", "steps", "cfg"), ("seed", "Steps", "CFG")),
+                                 (("sampler", "scheduler", "denoise"), ("Sampler", "Scheduler", "Denoise")),
+                                 (("flux_guidance",), ("Flux guidance",))):
+                lines.append(" | ".join(f"{label}={val(key)}" for key, label in zip(keys, labels) if key in inputs))
+            for key, label in (("external_sigmas", "External sigmas"),
+                               ("external_positive", "External positive conditioning"),
+                               ("external_negative", "External negative conditioning")):
+                if key in inputs:
+                    lines.append(f"{label}: connected (overrides internal)")
+            if inherit:
+                visit(inputs["external_model"])
+            for key, label in (("upstream_image_1", "Upstream image 1"),
+                               ("upstream_image_2", "Upstream image 2"),
+                               ("upstream_image_3", "Upstream image 3")):
+                if key in inputs:
+                    lines.append(f"{label} source:")
+                    visit(inputs[key])
+            return
         if kind == "BinyuanUltimateSampler":
             lines.append(f"采样器 #{node_id} · 提交配置")
             inherit = inputs.get("串联模式") == "继承上游模型" and _graph_link(inputs.get("外部模型"), prompt)
